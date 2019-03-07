@@ -88,7 +88,7 @@ def labels_to_class(pred_labels):
       hamming_dist = np.sum(curr_labels != class_labels)
       if hamming_dist < min_dist:
         min_index = j
-        hamming_dist = min_dist
+        min_dist = hamming_dist
     predictions.append(classes[min_index])
   return predictions
 
