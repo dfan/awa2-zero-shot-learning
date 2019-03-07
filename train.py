@@ -12,10 +12,12 @@ import sys
 def build_model(num_labels, is_parallel):
   model = torchvision.models.resnet50().to(device)
   if is_parallel:
+    print('Using DataParallel:')
     model = nn.DataParallel(model)
     model_features = model.module.fc.in_features
     model.module.fc = nn.Sequential(nn.BatchNorm1d(model_features), nn.Dropout(p=0.5), nn.Linear(model_features, num_labels))
   else:
+    print('Not using DataParallel:')
     model_features = model.fc.in_features
     model.fc = nn.Sequential(nn.BatchNorm1d(model_features), nn.Dropout(p=0.5), nn.Linear(model_features, num_labels))
   return model
@@ -35,10 +37,16 @@ def train(num_epochs, eval_interval, learning_rate, batch_size):
 
   total_steps = len(train_loader)
   num_labels = len(predicates)
-  model = build_model(num_labels, False).to(device)
+  if torch.cuda.device_count() > 1:
+    model = build_model(num_labels, True).to(device)
+  else:
+    model = build_model(num_labels, False).to(device)
   optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
   for epoch in range(num_epochs):
     for i, (images, features, img_names, indexes) in enumerate(train_loader):
+      # Batchnorm1D can't handle batch size of 1
+      if images.shape[0] < 2:
+        break
       images = images.to(device)
       features = features.to(device).float()
       # Toggle training flag
