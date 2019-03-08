@@ -22,10 +22,10 @@ def build_model(num_labels, is_pretrained, is_parallel):
   else:
     print('Not using DataParallel:')
     model_features = model.fc.in_features
-    model.fc = nn.Sequential(nn.BatchNorm1d(model_features), nn.ReLU(), nn.Linear(model_features, num_labels))
+    model.fc = nn.Sequential(nn.BatchNorm1d(model_features), nn.ReLU(), nn.Dropout(0.25), nn.Linear(model_features, num_labels))
   return model
 
-def train(num_epochs, eval_interval, learning_rate, model_name, optimizer_name, batch_size):
+def train(num_epochs, eval_interval, learning_rate, output_filename, model_name, optimizer_name, batch_size):
   train_params = {'batch_size': batch_size, 'shuffle': True, 'num_workers': 3}
   test_params = {'batch_size': 1, 'shuffle': True, 'num_workers': 3}
   train_process_steps = transforms.Compose([
@@ -85,10 +85,10 @@ def train(num_epochs, eval_interval, learning_rate, model_name, optimizer_name, 
     os.mkdir('models')
   torch.save(model.state_dict(), 'models/{}'.format(model_name))
   torch.save(optimizer.state_dict(), 'models/{}'.format(optimizer_name))
-  make_predictions(model, test_loader)
+  make_predictions(model, test_loader, output_filename)
 
 def get_hamming_dist(curr_labels, class_labels):
-  return np.sum(curr_labels == class_labels)
+  return np.sum(curr_labels != class_labels)
 
 def get_cosine_dist(curr_labels, class_labels):
   return np.sum(curr_labels * class_labels) / np.sqrt(np.sum(curr_labels)) / np.sqrt(np.sum(class_labels))
@@ -100,16 +100,15 @@ def labels_to_class(pred_labels):
   predictions = []
   for i in range(pred_labels.shape[0]):
     curr_labels = pred_labels[i,:].cpu().detach().numpy()
-    max_dist = -1
-    max_index = -1
+    best_dist = sys.maxsize
+    best_index = -1
     for j in range(predicate_binary_mat.shape[0]):
       class_labels = predicate_binary_mat[j,:]
-      dist = get_cosine_dist(curr_labels, class_labels)
-      #print('{}: {}'.format(classes[j], dist))
-      if dist > max_dist and classes[j] not in train_classes:
-        max_index = j
-        max_dist = dist
-    predictions.append(classes[max_index])
+      dist = get_euclidean_dist(curr_labels, class_labels)
+      if dist < best_dist and classes[j] not in train_classes:
+        best_index = j
+        best_dist = dist
+    predictions.append(classes[best_index])
   return predictions
 
 def evaluate(model, dataloader):
@@ -125,14 +124,13 @@ def evaluate(model, dataloader):
       features = features.to(device).float()
       outputs = model(images)
       sigmoid_outputs = torch.sigmoid(outputs)
-      pred_labels = sigmoid_outputs # > 0.5
+      pred_labels = sigmoid_outputs #> 0.5
       curr_pred_classes = labels_to_class(pred_labels)
       pred_classes.extend(curr_pred_classes)
 
       curr_truth_classes = []
       for index in indexes:
         curr_truth_classes.append(classes[index])
-      #print(curr_pred_classes, curr_truth_classes)
       truth_classes.extend(curr_truth_classes)
   
   pred_classes = np.array(pred_classes)
@@ -143,7 +141,7 @@ def evaluate(model, dataloader):
   model.train()
   return mean_acc
 
-def make_predictions(model, dataloader):
+def make_predictions(model, dataloader, output_filename):
   # Toggle flag
   model.eval()
   
@@ -155,7 +153,7 @@ def make_predictions(model, dataloader):
       features = features.to(device).float()
       outputs = model(images)
       sigmoid_outputs = torch.sigmoid(outputs)
-      pred_labels = sigmoid_outputs # > 0.5
+      pred_labels = sigmoid_outputs #> 0.5
       curr_pred_classes = labels_to_class(pred_labels)
       pred_classes.extend(curr_pred_classes)
       output_img_names.extend(img_names)
@@ -163,7 +161,7 @@ def make_predictions(model, dataloader):
       if i % 1000 == 0:
         print('Prediction iter: {}'.format(i))
 
-    with open('predictions.txt', 'w') as f:
+    with open(output_filename, 'w') as f:
       for i in range(len(pred_classes)):
         output_name = output_img_names[i].replace('data/JPEGImages/', '')
         f.write(output_name + ' ' + pred_classes[i] + '\n')
@@ -176,7 +174,6 @@ def load_model(model_file):
     dict = torch.load(model_file)
     model = model.module
     model.load_state_dict(dict)
-    #model = model.module
   else:
     state_dict = torch.load(model_file)
     model.load_state_dict(state_dict)
@@ -207,6 +204,7 @@ if __name__ == '__main__':
   parser.add_argument('--learning_rate', '-lr', type=float, default=0.00001)
   parser.add_argument('--model_name', '-mn', type=str, default='model.bin')
   parser.add_argument('--optimizer_name', '-opt', type=str, default='optimizer.bin')
+  parser.add_argument('--output_file', '-o', type=str, default='predictions.txt')
   parser.add_argument('--batch_size', '-bs', type=int, default=24)
   args = parser.parse_args()
   args = vars(args)
@@ -216,6 +214,7 @@ if __name__ == '__main__':
   learning_rate = args['learning_rate']
   model_name = args['model_name']
   optimizer_name = args['optimizer_name']
+  output_filename = args['output_file']
   batch_size = args['batch_size']
 
   device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
@@ -225,6 +224,6 @@ if __name__ == '__main__':
   predicate_binary_mat = np.array(np.genfromtxt('data/predicate-matrix-binary.txt', dtype='int'))
   predicate_continuous_mat = np.array(np.genfromtxt('data/predicate-matrix-continuous.txt', dtype='float'))
   num_labels = len(predicates)
-  train(num_epochs, eval_interval, learning_rate, model_name, optimizer_name, batch_size)
+  train(num_epochs, eval_interval, learning_rate, output_filename, model_name, optimizer_name, batch_size)
 
   #debug('models/model.bin', 'evaluate')
