@@ -9,17 +9,20 @@ import torchvision.transforms as transforms
 import os
 import sys
 
-def build_model(num_labels, is_parallel):
-  model = torchvision.models.resnet50().to(device)
+def build_model(num_labels, is_pretrained, is_parallel):
+  model = torchvision.models.resnet50(pretrained=is_pretrained).to(device)
+  if is_pretrained:
+    for i, param in model.named_parameters():
+      param.requires_grad = False
   if is_parallel:
     print('Using DataParallel:')
     model = nn.DataParallel(model)
     model_features = model.module.fc.in_features
-    model.module.fc = nn.Sequential(nn.BatchNorm1d(model_features), nn.Dropout(p=0.5), nn.Linear(model_features, num_labels))
+    model.module.fc = nn.Sequential(nn.BatchNorm1d(model_features), nn.ReLU(), nn.Dropout(0.25), nn.Linear(model_features, num_labels))
   else:
     print('Not using DataParallel:')
     model_features = model.fc.in_features
-    model.fc = nn.Sequential(nn.BatchNorm1d(model_features), nn.Dropout(p=0.5), nn.Linear(model_features, num_labels))
+    model.fc = nn.Sequential(nn.BatchNorm1d(model_features), nn.ReLU(), nn.Linear(model_features, num_labels))
   return model
 
 def train(num_epochs, eval_interval, learning_rate, model_name, optimizer_name, batch_size):
@@ -28,7 +31,7 @@ def train(num_epochs, eval_interval, learning_rate, model_name, optimizer_name, 
   train_process_steps = transforms.Compose([
     transforms.RandomRotation(15),
     transforms.RandomHorizontalFlip(),
-    transforms.ColorJitter(brightness=0.2),
+    transforms.ColorJitter(brightness=0.3, contrast=0.3),
     transforms.Resize((224,224)), # ImageNet standard
     transforms.ToTensor()
   ])
@@ -40,13 +43,13 @@ def train(num_epochs, eval_interval, learning_rate, model_name, optimizer_name, 
   test_dataset = AnimalDataset('testclasses.txt', test_process_steps)
   train_loader = data.DataLoader(train_dataset, **train_params)
   test_loader = data.DataLoader(test_dataset, **test_params)
-  criterion = nn.BCELoss()
+  criterion = nn.BCELoss() #nn.BCELoss()
 
   total_steps = len(train_loader)
   if torch.cuda.device_count() > 1:
-    model = build_model(num_labels, True).to(device)
+    model = build_model(num_labels, False, True).to(device)
   else:
-    model = build_model(num_labels, False).to(device)
+    model = build_model(num_labels, False, False).to(device)
   optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
   for epoch in range(num_epochs):
     for i, (images, features, img_names, indexes) in enumerate(train_loader):
@@ -84,19 +87,29 @@ def train(num_epochs, eval_interval, learning_rate, model_name, optimizer_name, 
   torch.save(optimizer.state_dict(), 'models/{}'.format(optimizer_name))
   make_predictions(model, test_loader)
 
+def get_hamming_dist(curr_labels, class_labels):
+  return np.sum(curr_labels == class_labels)
+
+def get_cosine_dist(curr_labels, class_labels):
+  return np.sum(curr_labels * class_labels) / np.sqrt(np.sum(curr_labels)) / np.sqrt(np.sum(class_labels))
+
+def get_euclidean_dist(curr_labels, class_labels):
+  return np.sqrt(np.sum((curr_labels - class_labels)**2))
+
 def labels_to_class(pred_labels):
   predictions = []
   for i in range(pred_labels.shape[0]):
     curr_labels = pred_labels[i,:].cpu().detach().numpy()
-    min_dist = sys.maxsize
-    min_index = -1
+    max_dist = -1
+    max_index = -1
     for j in range(predicate_binary_mat.shape[0]):
       class_labels = predicate_binary_mat[j,:]
-      hamming_dist = np.sum(curr_labels != class_labels)
-      if hamming_dist < min_dist:
-        min_index = j
-        min_dist = hamming_dist
-    predictions.append(classes[min_index])
+      dist = get_cosine_dist(curr_labels, class_labels)
+      #print('{}: {}'.format(classes[j], dist))
+      if dist > max_dist and classes[j] not in train_classes:
+        max_index = j
+        max_dist = dist
+    predictions.append(classes[max_index])
   return predictions
 
 def evaluate(model, dataloader):
@@ -112,13 +125,14 @@ def evaluate(model, dataloader):
       features = features.to(device).float()
       outputs = model(images)
       sigmoid_outputs = torch.sigmoid(outputs)
-      pred_labels = sigmoid_outputs > 0.5
+      pred_labels = sigmoid_outputs # > 0.5
       curr_pred_classes = labels_to_class(pred_labels)
       pred_classes.extend(curr_pred_classes)
 
       curr_truth_classes = []
       for index in indexes:
         curr_truth_classes.append(classes[index])
+      #print(curr_pred_classes, curr_truth_classes)
       truth_classes.extend(curr_truth_classes)
   
   pred_classes = np.array(pred_classes)
@@ -141,7 +155,7 @@ def make_predictions(model, dataloader):
       features = features.to(device).float()
       outputs = model(images)
       sigmoid_outputs = torch.sigmoid(outputs)
-      pred_labels = sigmoid_outputs > 0.5
+      pred_labels = sigmoid_outputs # > 0.5
       curr_pred_classes = labels_to_class(pred_labels)
       pred_classes.extend(curr_pred_classes)
       output_img_names.extend(img_names)
@@ -156,12 +170,13 @@ def make_predictions(model, dataloader):
       
 def load_model(model_file):
   is_parallel = True # torch.cuda.device_count() > 1
-  model = build_model(num_labels, is_parallel).to(device)
+  model = build_model(num_labels, False, is_parallel).to(device)
   if is_parallel:
     model = torch.nn.DataParallel(model)
     dict = torch.load(model_file)
     model = model.module
     model.load_state_dict(dict)
+    #model = model.module
   else:
     state_dict = torch.load(model_file)
     model.load_state_dict(state_dict)
@@ -204,6 +219,7 @@ if __name__ == '__main__':
   batch_size = args['batch_size']
 
   device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+  train_classes = np.array(np.genfromtxt('data/trainclasses.txt', dtype='str'))
   classes = np.array(np.genfromtxt('data/classes.txt', dtype='str'))[:,-1]
   predicates = np.array(np.genfromtxt('data/predicates.txt', dtype='str'))[:,-1]
   predicate_binary_mat = np.array(np.genfromtxt('data/predicate-matrix-binary.txt', dtype='int'))
@@ -211,4 +227,4 @@ if __name__ == '__main__':
   num_labels = len(predicates)
   train(num_epochs, eval_interval, learning_rate, model_name, optimizer_name, batch_size)
 
-  #debug('models/model.bin', 'predict')
+  #debug('models/model.bin', 'evaluate')
