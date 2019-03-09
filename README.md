@@ -7,7 +7,23 @@ Instead of training a classifier to predict the animal directly, like in canonic
 
 ### Model
 This repository uses ResNet50 (without pretraining) as the backbone, and adds a fully-connected layer to output a value for each of the attributes (85). ResNet by default outputs a 2048 dimensional feature vector in the fully-connected layer.
- I pass the 85 dimensional output through a sigmoid activation to get probabilities for each attribute. Binary cross-entropy loss is then used to train the network.
+ I pass the 85 dimensional output through a sigmoid activation to get probabilities for each attribute. Binary cross-entropy loss is then used to train the network, since we are doing multi-label classification (as opposed to multi-class).
 
 Typically in transfer learning / other supervised learning settings, one would use a pre-trained model (such as ResNet on ImageNet). Here though, using an ImageNet pre-trained model would violate the spirit of zero-shot learning, since ImageNet and AwA2 share some animal classes, and the idea of zero-shot learning is to be able to classify data unseen by the classifier.
+
+### Training and Performance
+I trained for just 25 epochs at a constant learning rate of 0.000025 using Adam optimizer, and got 35.5% accuracy on the testing set (which is entirely disjoint from the training set). This is not bad compared to some of the earlier literature using AwA2, but current state-of-art of zero-shot-learning on AwA2 is in the high 70% range. I suspect that my results would have been better if I had trained for longer, since the loss function  was still decreasing rapidly at the end of training.
+
+![](./figures/loss_plot.png)
+
+Confusion Matrix:
+
+![](./figures/confusion_matrix.png)
+
+### Python Libraries
+- torch
+- torchvision
+- numpy
+- matplotlib
+- scikit-learn
 
